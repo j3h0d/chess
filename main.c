@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "board_definition.h"
+#include "game_logic.h"
 
 // ===== Global board state =====
 uint8_t board[BOARD_TILES][BOARD_TILES];
@@ -22,14 +23,14 @@ volatile unsigned int *BTN_EDGECAP = (volatile unsigned int *)(BTN_BASE + 0x0C);
 #define SW_BIT 0x3F
 
 // enabling interupts
-extern void enable_interrupt(void);
+extern void enable_interrupt();
 
 // ===== VGA helpers =====
-static volatile uint8_t  *get_framebuffer(void) { return (volatile uint8_t *)VIDEO_FRAMEBUFFER_BASE; }
-static volatile int *get_vga_control(void) { return (volatile int *)VIDEO_DMA_BASE; }
+static volatile uint8_t  *get_framebuffer() { return (volatile uint8_t *)VIDEO_FRAMEBUFFER_BASE; }
+static volatile int *get_vga_control() { return (volatile int *)VIDEO_DMA_BASE; }
 
 // draw the board istelf
-static void draw_board_tiles(void) {
+static void draw_board_tiles() {
     volatile uint8_t *fb = get_framebuffer();
 
     for (int y = 0; y < BOARD_SIZE; y++) {
@@ -44,6 +45,14 @@ static void draw_board_tiles(void) {
             fb[py * VIDEO_PITCH + px] = color;
         }
     }
+}
+
+static int is_white_piece(uint8_t piece) {
+    return piece == PIECE_W_PAWN || piece == PIECE_W_ROOK   || piece == PIECE_W_KNIGHT || piece == PIECE_W_BISHOP || piece == PIECE_W_QUEEN  || piece == PIECE_W_KING;
+}
+
+static int is_black_piece(uint8_t piece) {
+    return piece == PIECE_B_PAWN || piece == PIECE_B_ROOK   || piece == PIECE_B_KNIGHT || piece == PIECE_B_BISHOP || piece == PIECE_B_QUEEN  || piece == PIECE_B_KING;
 }
 
 // draw the pieces on the board
@@ -64,29 +73,12 @@ static void draw_piece_at(int file, int rank_board, uint8_t piece) {
     int py1 = py0 + ph - 1;
 
     uint8_t color;
-    switch (piece) {
-        // vita pjäser
-        case PIECE_W_PAWN:
-        case PIECE_W_ROOK:
-        case PIECE_W_KNIGHT:
-        case PIECE_W_BISHOP:
-        case PIECE_W_QUEEN:
-        case PIECE_W_KING:
-            color = COLOR_WHITE_PIECE;
-            break;
-
-        // svarta pjäser
-        case PIECE_B_PAWN:
-        case PIECE_B_ROOK:
-        case PIECE_B_KNIGHT:
-        case PIECE_B_BISHOP:
-        case PIECE_B_QUEEN:
-        case PIECE_B_KING:
-            color = COLOR_BLACK_PIECE;
-            break;
-
-        default:
-            return;
+    if (is_white_piece(piece)) {
+        color = COLOR_WHITE_PIECE;
+    } else if (is_black_piece(piece)) {
+        color = COLOR_BLACK_PIECE;
+    } else {
+        return;
     }
 
     for (int y = py0; y <= py1; y++) {
@@ -177,11 +169,11 @@ static void read_switch_square(int *file, int *rank_sw) {
     *rank_sw = (sw >> 3) & 0x7;
 }
 
-static int square_has_piece(int file, int rank_board) {
+/*static int square_has_piece(int file, int rank_board) {
     if (file < 0 || file >= BOARD_TILES) return 0;
     if (rank_board < 0 || rank_board >= BOARD_TILES) return 0;
     return board[rank_board][file] != PIECE_EMPTY;
-}
+}*/
 
 static void perform_move(int src_file, int src_rank, int dst_file, int dst_rank){
     uint8_t piece = board[src_rank][src_file];
@@ -209,27 +201,22 @@ void labinit(void) {
 
 static int sel_file = -1;
 static int sel_rank = -1;
+static int btn_down = 0;
+static int white_to_move = 1;
 // ===== Interrupt init =====
 void handle_interrupt(unsigned cause) {
 
     if (cause == 17) {
-        *SW_EDGECAP = SW_BIT;          // clear switch edge
+        *SW_EDGECAP = SW_BIT;
 
         int f, r_sw;
         read_switch_square(&f, &r_sw);
         int board_rank = 7 - r_sw;
 
         if (f >= 0 && f < BOARD_TILES && board_rank >= 0 && board_rank < BOARD_TILES) {
-
-            // Only update if the selector actually moved
             if (f != sel_file || board_rank != sel_rank) {
-                // Redraw board + pieces once
                 redraw_board_and_pieces();
-
-                // Draw selector at new square
                 select_tile(f, board_rank);
-
-                // Remember new position
                 sel_file = f;
                 sel_rank = board_rank;
             }
@@ -239,61 +226,68 @@ void handle_interrupt(unsigned cause) {
     static int src_file = -1;
     static int src_rank = -1;
     static int piece_selected = 0;
-    static int btn_down = 0;
-    static int white_move = 1;
     if (cause == 18) {
         int pending = *BTN_EDGECAP;
         *BTN_EDGECAP = pending;
 
-        // write to data
         unsigned int btn_state = *BTN_DATA;
-
         if ((btn_state & BTN_BIT) == 0) {
-            btn_down = 0;         // button released
+            btn_down = 0;
             return;
-        }  
+        }
+        if (btn_down) {
+            return;
+        }
         btn_down = 1;
 
-        // If selector is not on a valid square, ignore the press
         if (sel_file < 0 || sel_file >= BOARD_TILES || sel_rank < 0 || sel_rank >= BOARD_TILES) {
             return;
         }
 
         if(!piece_selected){
-            // FIRST CLICK
-            if(!square_has_piece(sel_file, sel_rank)){
+            uint8_t piece = board[sel_rank][sel_file];
+            if (piece == PIECE_EMPTY) {
                 return;
             }
 
-            /*if(white_move){
-
-            }*/
+            if (white_to_move) {
+                if (!is_white_piece(piece)) {
+                    return;
+                }
+            } else {
+                if (!is_black_piece(piece)) {
+                    return;
+                }
+            }
 
             src_file = sel_file;
             src_rank = sel_rank;
             piece_selected = 1;
 
-
         } else {
-            // SECOND CLICK
             int dst_file = sel_file;
             int dst_rank = sel_rank;
 
-            perform_move(src_file, src_rank, dst_file, dst_rank);
-            piece_selected = 0;
+            uint8_t piece = board[src_rank][src_file];
+            if (legal_move(src_file, src_rank, dst_file, dst_rank, piece, white_to_move)) {
+                perform_move(src_file, src_rank, dst_file, dst_rank);
+                piece_selected = 0;
+                white_to_move = !white_to_move;
+            } else {
+                piece_selected = 0;
+            }
         }
-        *BTN_EDGECAP = pending;
     }
 }
 
 // ===== main =====
-int main(void) {
+int main() {
     volatile uint8_t  *framebuffer = get_framebuffer();
     volatile int *vga_control = get_vga_control();
 
     labinit();
     init_start_position();
-    redraw_board_and_pieces(); // rita bräde + pjäser (halva rutstorleken)
+    redraw_board_and_pieces();
 
     vga_control[VIDEO_DMA_BACKBUFFER] = (int)framebuffer;
     vga_control[VIDEO_DMA_BUFFER]     = 0;
