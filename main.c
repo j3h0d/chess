@@ -1,25 +1,34 @@
 #include <stdint.h>
 #include "board_definition.h"
 
-// global board state (rank, file)
+// ===== Global board state =====
 uint8_t board[BOARD_TILES][BOARD_TILES];
 
-void handle_interrupt(void) { }
+// ===== MMIO for switches, buttons =====
 
-// helpers
+// Switch PIO base
+#define SW_BASE 0x04000010
+volatile unsigned int *SW_DATA    = (volatile unsigned int *)(SW_BASE + 0x00);
+volatile unsigned int *SW_MASK    = (volatile unsigned int *)(SW_BASE + 0x08);
+volatile unsigned int *SW_EDGECAP = (volatile unsigned int *)(SW_BASE + 0x0C);
 
+// Button PIO base
+#define BTN_BASE 0x040000D0
+volatile unsigned int *BTN_DATA    = (volatile unsigned int *)(BTN_BASE + 0x00);
+volatile unsigned int *BTN_MASK    = (volatile unsigned int *)(BTN_BASE + 0x08);
+volatile unsigned int *BTN_EDGECAP = (volatile unsigned int *)(BTN_BASE + 0x0C);
+
+#define BTN_BIT (1u << 0)
+#define SW_BIT 0x3F
+
+// enabling interupts
+extern void enable_interrupt(void);
+
+// ===== VGA helpers =====
 static volatile uint8_t  *get_framebuffer(void) { return (volatile uint8_t *)VIDEO_FRAMEBUFFER_BASE; }
-static volatile uint32_t *get_vga_control(void) { return (volatile uint32_t *)VIDEO_DMA_BASE; }
+static volatile int *get_vga_control(void) { return (volatile int *)VIDEO_DMA_BASE; }
 
-static void clear_screen(uint8_t color) {
-    volatile uint8_t *fb = get_framebuffer();
-    for (int y = 0; y < VIDEO_HEIGHT; y++) {
-        for (int x = 0; x < VIDEO_WIDTH; x++) {
-            fb[y * VIDEO_PITCH + x] = color;
-        }
-    }
-}
-
+// draw the board istelf
 static void draw_board_tiles(void) {
     volatile uint8_t *fb = get_framebuffer();
 
@@ -28,8 +37,7 @@ static void draw_board_tiles(void) {
         for (int x = 0; x < BOARD_SIZE; x++) {
             int tile_x = x / TILE_SIZE;
 
-            uint8_t color =
-                ((tile_x + tile_y) & 1) ? COLOR_DARK_TILE : COLOR_LIGHT_TILE;
+            uint8_t color = ((tile_x + tile_y) & 1) ? COLOR_DARK_TILE : COLOR_LIGHT_TILE;
 
             int px = BOARD_X0 + x;
             int py = BOARD_Y0 + y;
@@ -38,161 +46,65 @@ static void draw_board_tiles(void) {
     }
 }
 
-// 8x8 glyphs for the letters we need (P, H, B, R, Q, K, ?)
-static const uint8_t GLYPH_P[8] = {
-    0x7C, 0x44, 0x44, 0x7C, 0x40, 0x40, 0x40, 0x00
-};
+// draw the pieces on the board
+static void draw_piece_at(int file, int rank_board, uint8_t piece) {
+    if (piece == PIECE_EMPTY) return;
 
-static const uint8_t GLYPH_H[8] = {
-    0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x00
-};
+    volatile uint8_t *fb = get_framebuffer();
 
-static const uint8_t GLYPH_B[8] = {
-    0x78, 0x44, 0x44, 0x78, 0x44, 0x44, 0x78, 0x00
-};
+    int tile_x0 = BOARD_X0 + file * TILE_SIZE;
+    int tile_y0 = BOARD_Y0 + rank_board * TILE_SIZE;
 
-static const uint8_t GLYPH_R[8] = {
-    0x7C, 0x44, 0x44, 0x7C, 0x48, 0x44, 0x42, 0x00
-};
+    int pw = TILE_SIZE / 2;
+    int ph = TILE_SIZE / 2;
 
-static const uint8_t GLYPH_Q[8] = {
-    0x38, 0x44, 0x44, 0x44, 0x44, 0x4C, 0x3A, 0x00
-};
+    int px0 = tile_x0 + (TILE_SIZE - pw) / 2;
+    int py0 = tile_y0 + (TILE_SIZE - ph) / 2;
+    int px1 = px0 + pw - 1;
+    int py1 = py0 + ph - 1;
 
-static const uint8_t GLYPH_K[8] = {
-    0x44, 0x48, 0x50, 0x60, 0x50, 0x48, 0x44, 0x00
-};
-
-static const uint8_t GLYPH_QUESTION[8] = {
-    0x3C, 0x42, 0x04, 0x08, 0x10, 0x00, 0x10, 0x00
-};
-
-// map PIECE_* value -> letter to display
-static char define_piece_letter(uint8_t value) {
-    switch (value) {
+    uint8_t color;
+    switch (piece) {
+        // vita pjäser
         case PIECE_W_PAWN:
-        case PIECE_B_PAWN:
-            return 'P';
-
-        case PIECE_W_KNIGHT:
-        case PIECE_B_KNIGHT:
-            return 'H';   // horse
-
-        case PIECE_W_BISHOP:
-        case PIECE_B_BISHOP:
-            return 'B';
-
         case PIECE_W_ROOK:
-        case PIECE_B_ROOK:
-            return 'R';
-
+        case PIECE_W_KNIGHT:
+        case PIECE_W_BISHOP:
         case PIECE_W_QUEEN:
-        case PIECE_B_QUEEN:
-            return 'Q';
-
         case PIECE_W_KING:
+            color = COLOR_WHITE_PIECE;
+            break;
+
+        // svarta pjäser
+        case PIECE_B_PAWN:
+        case PIECE_B_ROOK:
+        case PIECE_B_KNIGHT:
+        case PIECE_B_BISHOP:
+        case PIECE_B_QUEEN:
         case PIECE_B_KING:
-            return 'K';
+            color = COLOR_BLACK_PIECE;
+            break;
 
         default:
-            return '?';
-    }
-}
-
-// draw a single 8x8 character at (x, y)
-static void draw_char8x8(int x, int y, char c, uint8_t color) {
-    volatile uint8_t *fb = get_framebuffer();
-    const uint8_t *glyph = GLYPH_QUESTION;
-
-    switch (c) {
-        case 'P': glyph = GLYPH_P; break;
-        case 'H': glyph = GLYPH_H; break;
-        case 'B': glyph = GLYPH_B; break;
-        case 'R': glyph = GLYPH_R; break;
-        case 'Q': glyph = GLYPH_Q; break;
-        case 'K': glyph = GLYPH_K; break;
-        default:  glyph = GLYPH_QUESTION; break;
+            return;
     }
 
-    for (int row = 0; row < 8; row++) {
-        uint8_t bits = glyph[row];
-        for (int col = 0; col < 8; col++) {
-            if (bits & (1u << (7 - col))) {
-                int px = x + col;
-                int py = y + row;
-                if (px >= 0 && px < VIDEO_WIDTH &&
-                    py >= 0 && py < VIDEO_HEIGHT) {
-                    fb[py * VIDEO_PITCH + px] = color;
-                }
-            }
+    for (int y = py0; y <= py1; y++) {
+        for (int x = px0; x <= px1; x++) {
+            fb[y * VIDEO_PITCH + x] = color;
         }
     }
 }
 
-
-static void draw_piece_at(int file, int rank, uint8_t piece_color, uint8_t piece_value) {
-    volatile uint8_t *fb = get_framebuffer();
-
-    int x0 = BOARD_X0 + file * TILE_SIZE;
-    int y0 = BOARD_Y0 + rank * TILE_SIZE;
-
-    // size of inner square for the piece
-    int s = TILE_SIZE / 2;
-    int half = s / 2;
-
-    int x1 = x0 + TILE_SIZE / 2 - half;
-    int x2 = x0 + TILE_SIZE / 2 + half;
-    int y1 = y0 + TILE_SIZE / 2 - half;
-    int y2 = y0 + TILE_SIZE / 2 + half;
-
-    // filled square (piece body)
-    for (int y = y1; y < y2; y++) {
-        for (int x = x1; x < x2; x++) {
-            fb[y * VIDEO_PITCH + x] = piece_color;
-        }
-    }
-
-    // choose letter for this piece
-    char letter = define_piece_letter(piece_value);
-
-    // choose a text color with contrast to the piece body
-    uint8_t text_color =
-        (piece_color == COLOR_BLACK_PIECE) ? COLOR_LIGHT_TILE : COLOR_DARK_TILE;
-
-    // center 8x8 character in the tile
-    int text_x = x0 + (TILE_SIZE - 8) / 2;
-    int text_y = y0 + (TILE_SIZE - 8) / 2;
-
-    draw_char8x8(text_x, text_y, letter, text_color);
-}
-
-static void draw_all_pieces(void) {
-    for (int rank = 0; rank < BOARD_TILES; rank++) {
-        for (int file = 0; file < BOARD_TILES; file++) {
-            uint8_t p = board[rank][file];
-            if (p == PIECE_EMPTY) continue;
-
-            uint8_t color;
-            if (p >= PIECE_B_PAWN) {
-                color = COLOR_BLACK_PIECE;
-            } else {
-                color = COLOR_WHITE_PIECE;
-            }
-
-            draw_piece_at(file, rank, color, p);
-        }
-    }
-}
-
+// ===== Board setup =====
 static void init_start_position(void) {
-    // clear board
     for (int r = 0; r < BOARD_TILES; r++) {
         for (int f = 0; f < BOARD_TILES; f++) {
             board[r][f] = PIECE_EMPTY;
         }
     }
 
-    // black
+    // Svarta pjäser
     board[0][0] = PIECE_B_ROOK;
     board[0][1] = PIECE_B_KNIGHT;
     board[0][2] = PIECE_B_BISHOP;
@@ -206,7 +118,7 @@ static void init_start_position(void) {
         board[1][f] = PIECE_B_PAWN;
     }
 
-    // white
+    // Vita pjäser
     for (int f = 0; f < BOARD_TILES; f++) {
         board[6][f] = PIECE_W_PAWN;
     }
@@ -221,24 +133,174 @@ static void init_start_position(void) {
     board[7][7] = PIECE_W_ROOK;
 }
 
-// redraw after any board[] change
+// Rita om bräde + pjäser
 void redraw_board_and_pieces(void) {
-    clear_screen(COLOR_BACKGROUND);
     draw_board_tiles();
-    draw_all_pieces();
+
+    for (int r = 0; r < BOARD_TILES; r++) {
+        for (int f = 0; f < BOARD_TILES; f++) {
+            uint8_t piece = board[r][f];
+            if (piece != PIECE_EMPTY) {
+                draw_piece_at(f, r, piece);
+            }
+        }
+    }
 }
 
+// ===== Selector and switch decoding =====
+
+// draw red border around a board square (file, rank_board: 0=top,7=bottom)
+static void select_tile(int file, int rank_board) {
+    volatile uint8_t *fb = get_framebuffer();
+
+    int x0 = BOARD_X0 + file * TILE_SIZE;
+    int y0 = BOARD_Y0 + rank_board * TILE_SIZE;
+    int x1 = x0 + TILE_SIZE - 1;
+    int y1 = y0 + TILE_SIZE - 1;
+
+    if (x0 < 0 || y0 < 0 || x1 >= VIDEO_WIDTH || y1 >= VIDEO_HEIGHT) return;
+
+    for (int x = x0; x <= x1; x++) {
+        fb[y0 * VIDEO_PITCH + x] = COLOR_RED;
+        fb[y1 * VIDEO_PITCH + x] = COLOR_RED;
+    }
+    for (int y = y0; y <= y1; y++) {
+        fb[y * VIDEO_PITCH + x0] = COLOR_RED;
+        fb[y * VIDEO_PITCH + x1] = COLOR_RED;
+    }
+}
+
+// read current selector square from switches: file in bits 0..2, rank in bits 3..5
+static void read_switch_square(int *file, int *rank_sw) {
+    int sw = *SW_DATA;
+    *file    = sw & 0x7;
+    *rank_sw = (sw >> 3) & 0x7;
+}
+
+static int square_has_piece(int file, int rank_board) {
+    if (file < 0 || file >= BOARD_TILES) return 0;
+    if (rank_board < 0 || rank_board >= BOARD_TILES) return 0;
+    return board[rank_board][file] != PIECE_EMPTY;
+}
+
+static void perform_move(int src_file, int src_rank, int dst_file, int dst_rank){
+    uint8_t piece = board[src_rank][src_file];
+    if (piece == PIECE_EMPTY) return;
+
+    board[src_rank][src_file] = PIECE_EMPTY;
+    board[dst_rank][dst_file] = piece;
+
+    redraw_board_and_pieces();
+    select_tile(dst_file, dst_rank);
+}
+
+// ===== Interrupt init =====
+void labinit(void) {
+    // Enable switch
+    *SW_MASK    = SW_BIT;
+    *SW_EDGECAP = SW_BIT;
+
+    // Enable button
+    *BTN_MASK    = BTN_BIT;
+    *BTN_EDGECAP = BTN_BIT;
+
+    enable_interrupt();
+}
+
+static int sel_file = -1;
+static int sel_rank = -1;
+// ===== Interrupt init =====
+void handle_interrupt(unsigned cause) {
+
+    if (cause == 17) {
+        *SW_EDGECAP = SW_BIT;          // clear switch edge
+
+        int f, r_sw;
+        read_switch_square(&f, &r_sw);
+        int board_rank = 7 - r_sw;
+
+        if (f >= 0 && f < BOARD_TILES && board_rank >= 0 && board_rank < BOARD_TILES) {
+
+            // Only update if the selector actually moved
+            if (f != sel_file || board_rank != sel_rank) {
+                // Redraw board + pieces once
+                redraw_board_and_pieces();
+
+                // Draw selector at new square
+                select_tile(f, board_rank);
+
+                // Remember new position
+                sel_file = f;
+                sel_rank = board_rank;
+            }
+        }
+    }
+
+    static int src_file = -1;
+    static int src_rank = -1;
+    static int piece_selected = 0;
+    static int btn_down = 0;
+    static int white_move = 1;
+    if (cause == 18) {
+        int pending = *BTN_EDGECAP;
+        *BTN_EDGECAP = pending;
+
+        // write to data
+        unsigned int btn_state = *BTN_DATA;
+
+        if ((btn_state & BTN_BIT) == 0) {
+            btn_down = 0;         // button released
+            return;
+        }  
+        btn_down = 1;
+
+        // If selector is not on a valid square, ignore the press
+        if (sel_file < 0 || sel_file >= BOARD_TILES || sel_rank < 0 || sel_rank >= BOARD_TILES) {
+            return;
+        }
+
+        if(!piece_selected){
+            // FIRST CLICK
+            if(!square_has_piece(sel_file, sel_rank)){
+                return;
+            }
+
+            /*if(white_move){
+
+            }*/
+
+            src_file = sel_file;
+            src_rank = sel_rank;
+            piece_selected = 1;
+
+
+        } else {
+            // SECOND CLICK
+            int dst_file = sel_file;
+            int dst_rank = sel_rank;
+
+            perform_move(src_file, src_rank, dst_file, dst_rank);
+            piece_selected = 0;
+        }
+        *BTN_EDGECAP = pending;
+    }
+}
+
+// ===== main =====
 int main(void) {
     volatile uint8_t  *framebuffer = get_framebuffer();
-    volatile uint32_t *vga_control = get_vga_control();
+    volatile int *vga_control = get_vga_control();
 
+    labinit();
     init_start_position();
-    redraw_board_and_pieces();
+    redraw_board_and_pieces(); // rita bräde + pjäser (halva rutstorleken)
 
-    vga_control[VIDEO_DMA_BACKBUFFER] = (uint32_t)framebuffer;
+    vga_control[VIDEO_DMA_BACKBUFFER] = (int)framebuffer;
     vga_control[VIDEO_DMA_BUFFER]     = 0;
 
-    while (1) { }
+    while (1) {
+        // all game interaction happens in handle_interrupt()
+    }
 
     return 0;
 }
