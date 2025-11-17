@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "board_definition.h"
 #include "game_logic.h"
+#include "piece_sprites.h"
 
 // ===== Global board state =====
 uint8_t board[BOARD_TILES][BOARD_TILES];
@@ -64,26 +65,31 @@ static void draw_piece_at(int file, int rank_board, uint8_t piece) {
     int tile_x0 = BOARD_X0 + file * TILE_SIZE;
     int tile_y0 = BOARD_Y0 + rank_board * TILE_SIZE;
 
-    int pw = TILE_SIZE / 2;
-    int ph = TILE_SIZE / 2;
+    //get chess piece pointer for this piece
+    const uint8_t *sprite = get_piece_sprite(piece);
+    if (!sprite) return;
 
-    int px0 = tile_x0 + (TILE_SIZE - pw) / 2;
-    int py0 = tile_y0 + (TILE_SIZE - ph) / 2;
-    int px1 = px0 + pw - 1;
-    int py1 = py0 + ph - 1;
+    //draw each shi in right place
+    int px0 = tile_x0 + (TILE_SIZE - PIECE_SPRITE_W)  / 2;
+    int py0 = tile_y0 + (TILE_SIZE - PIECE_SPRITE_H) / 2;
 
-    uint8_t color;
-    if (is_white_piece(piece)) {
-        color = COLOR_WHITE_PIECE;
-    } else if (is_black_piece(piece)) {
-        color = COLOR_BLACK_PIECE;
-    } else {
-        return;
-    }
+    for (int sy = 0; sy < PIECE_SPRITE_H; ++sy) {
+        int py = py0 + sy;
+        if ((unsigned)py >= VIDEO_HEIGHT) continue;
 
-    for (int y = py0; y <= py1; y++) {
-        for (int x = px0; x <= px1; x++) {
-            fb[y * VIDEO_PITCH + x] = color;
+        for (int sx = 0; sx < PIECE_SPRITE_W; ++sx) {
+            int px = px0 + sx;
+            if ((unsigned)px >= VIDEO_WIDTH) continue;
+
+            // Row-major indexing into 1D array
+            uint8_t color = sprite[sy * PIECE_SPRITE_W + sx];
+
+            // Skip transparent background pixels
+            if (color == COLOR_TRANSPARENT_KEY) {
+                continue;
+            }
+
+            fb[py * VIDEO_PITCH + px] = color;
         }
     }
 }
