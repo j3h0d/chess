@@ -125,3 +125,22 @@ _start:
 	jal main
 	
 loop:	j loop
+
+.globl enable_interrupt
+
+enable_interrupt:
+	la a0, _isr_handler // saves entry adress location
+	// interrupt entry address
+	csrw mtvec, a0
+
+	// Put 16 bits to mie to 1
+	csrsi mie, 16 // enable machine-external interrupt (see interuption)
+	csrsi mie, 17	// enable switches
+	csrsi mie, 18	// enable button
+	
+	
+	// Put bit 3 in mstatus
+	csrsi mstatus, 3 // global interrupt enable (react to interuption)
+
+	jr ra
+
