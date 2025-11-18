@@ -227,6 +227,38 @@ static void perform_move(int src_file, int src_rank, int dst_file, int dst_rank)
 static volatile int timeoutcount  = 0;  // timer ticks (10 per second)
 static volatile int seconds_left  = 60; // starts at 60 for current player
 
+void update_clock_outputs(void) {
+    int sec = seconds_left;
+    if (sec < 0)  sec = 0;
+    if (sec > 99) sec = 99;   // we only show 2 digits
+
+    int tens = sec / 10;
+    int ones = sec % 10;
+    static volatile int zeros = 0;
+
+    // Rightmost two digits show seconds_left
+    set_displays(0, ones);  // rightmost
+    set_displays(1, tens);  // next
+    // Blank the other four digits
+    set_displays(2, zeros);
+    set_displays(3, zeros);
+    set_displays(4, zeros);
+    set_displays(5, zeros);
+
+    // diods logic:
+    // >10 seconds -> all 10 leds on
+    // N in [0...10] -> N rightmost leds on
+    if (seconds_left > 10) {
+        set_leds(0x3FF); // 10 ones: 0b11_1111_1111
+    } else if (seconds_left >= 0) {
+        //between 10s and 0s diods turn off one by one
+        unsigned int mask = (seconds_left == 0) ? 0 : ((1u << seconds_left) - 1u);
+        set_leds(mask);
+    } else {
+        set_leds(0);
+    }
+}
+
 // ===== Interrupt init =====
 void labinit(void) {
     *TMR_STATUS = 0;
@@ -258,37 +290,6 @@ static int white_to_move = 1;
 static int src_file = -1;
 static int src_rank = -1;
 static int piece_selected = 0;
-
-void update_clock_outputs(void) {
-    int sec = seconds_left;
-    if (sec < 0)  sec = 0;
-    if (sec > 99) sec = 99;   // we only show 2 digits
-
-    int tens = sec / 10;
-    int ones = sec % 10;
-
-    // Rightmost two digits show seconds_left
-    set_displays(0, ones);  // rightmost
-    set_displays(1, tens);  // next
-    // Blank the other four digits
-    set_displays(2, -1); //-1 means not in use
-    set_displays(3, -1);
-    set_displays(4, -1);
-    set_displays(5, -1);
-
-    // diods logic:
-    // >10 seconds -> all 10 leds on
-    // N in [0...10] -> N rightmost leds on
-    if (seconds_left > 10) {
-        set_leds(0x3FF); // 10 ones: 0b11_1111_1111
-    } else if (seconds_left >= 0) {
-        //between 10s and 0s diods turn off one by one
-        unsigned int mask = (seconds_left == 0) ? 0 : ((1u << seconds_left) - 1u);
-        set_leds(mask);
-    } else {
-        set_leds(0);
-    }
-}
 
 // ===== Interrupt init =====
 void handle_interrupt(unsigned cause) {
