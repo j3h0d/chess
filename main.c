@@ -20,6 +20,13 @@ volatile unsigned int *BTN_DATA    = (volatile unsigned int *)(BTN_BASE + 0x00);
 volatile unsigned int *BTN_MASK    = (volatile unsigned int *)(BTN_BASE + 0x08);
 volatile unsigned int *BTN_EDGECAP = (volatile unsigned int *)(BTN_BASE + 0x0C);
 
+// -timer hardware-
+#define TIMER_BASE  0x04000020
+volatile unsigned int *TMR_STATUS  = (volatile unsigned int *)(TIMER_BASE + 0x00);
+volatile unsigned int *TMR_CONTROL = (volatile unsigned int *)(TIMER_BASE + 0x04);
+volatile unsigned int *TMR_PERIODL = (volatile unsigned int *)(TIMER_BASE + 0x08);
+volatile unsigned int *TMR_PERIODH = (volatile unsigned int *)(TIMER_BASE + 0x0C);
+
 #define BTN_BIT (1u << 0)
 #define SW_BIT 0x3F
 
@@ -29,6 +36,30 @@ extern void enable_interrupt();
 // ===== VGA helpers =====
 static volatile uint8_t  *get_framebuffer() { return (volatile uint8_t *)VIDEO_FRAMEBUFFER_BASE; }
 static volatile int *get_vga_control() { return (volatile int *)VIDEO_DMA_BASE; }
+
+static void set_leds(int led_mask) {
+    volatile int *LED = (volatile int*) 0x04000000;
+    *LED = led_mask & 0x3FF; // -lower 10 bits used-
+}
+
+static void set_displays(int display_number, int value){
+    int addr = 0x04000050 + (0x10 * display_number);
+    volatile int *GET_DISPLAY = (volatile int*) addr;
+
+    switch (value) { 
+        case 0:*GET_DISPLAY = 0b11000000; break;
+        case 1:*GET_DISPLAY = 0b11111001; break;
+        case 2:*GET_DISPLAY = 0b10100100; break;
+        case 3:*GET_DISPLAY = 0b10110000; break;
+        case 4:*GET_DISPLAY = 0b10011001; break;
+        case 5:*GET_DISPLAY = 0b10010010; break;
+        case 6:*GET_DISPLAY = 0b10000010; break;
+        case 7:*GET_DISPLAY = 0b11111000; break;
+        case 8:*GET_DISPLAY = 0b10000000; break;
+        case 9:*GET_DISPLAY = 0b10010000; break;
+        default:*GET_DISPLAY = 0b00000000; break; //all on is defaultbreak;
+    }
+}
 
 // draw the board istelf
 static void draw_board_tiles() {
@@ -192,8 +223,53 @@ static void perform_move(int src_file, int src_rank, int dst_file, int dst_rank)
     select_tile(dst_file, dst_rank);
 }
 
+// clock state
+static volatile int timeoutcount  = 0;  // timer ticks (10 per second)
+static volatile int seconds_left  = 60; // starts at 60 for current player
+
+void update_clock_outputs(void) {
+    int sec = seconds_left;
+    if (sec < 0)  sec = 0;
+    if (sec > 99) sec = 99;   // we only show 2 digits
+
+    int tens = sec / 10;
+    int ones = sec % 10;
+    static volatile int zeros = 0;
+
+    // Rightmost two digits show seconds_left
+    set_displays(0, ones);  // rightmost
+    set_displays(1, tens);  // next
+    // Blank the other four digits
+    set_displays(2, zeros);
+    set_displays(3, zeros);
+    set_displays(4, zeros);
+    set_displays(5, zeros);
+
+    // diods logic:
+    // >10 seconds -> all 10 leds on
+    // N in [0...10] -> N rightmost leds on
+    if (seconds_left > 10) {
+        set_leds(0x3FF); // 10 ones: 0b11_1111_1111
+    } else if (seconds_left >= 0) {
+        //between 10s and 0s diods turn off one by one
+        unsigned int mask = (seconds_left == 0) ? 0 : ((1u << seconds_left) - 1u);
+        set_leds(mask);
+    } else {
+        set_leds(0);
+    }
+}
+
 // ===== Interrupt init =====
 void labinit(void) {
+    *TMR_STATUS = 0;
+    *TMR_PERIODL = 0xC6BF;
+    *TMR_PERIODH = 0x002D;
+    *TMR_CONTROL = 0x7;
+
+    timeoutcount = 0;
+    seconds_left = 60;
+    update_clock_outputs();
+
     // Enable switch
     *SW_MASK    = SW_BIT;
     *SW_EDGECAP = SW_BIT;
@@ -209,8 +285,44 @@ static int sel_file = -1;
 static int sel_rank = -1;
 static int btn_down = 0;
 static int white_to_move = 1;
+
+//moved from inside handle_interrupt to outside to be independent
+static int src_file = -1;
+static int src_rank = -1;
+static int piece_selected = 0;
+
 // ===== Interrupt init =====
 void handle_interrupt(unsigned cause) {
+
+    if (cause == 16) {
+        *TMR_STATUS = 0;
+        timeoutcount++;
+
+        if (timeoutcount >= 10) {
+            timeoutcount = 0;
+
+            if (seconds_left > 0) {
+                seconds_left--;
+            }
+
+            if (seconds_left <= 0) {
+                seconds_left = 0;
+                update_clock_outputs(); //shows 0 and leds all off
+
+                white_to_move = !white_to_move;
+
+                // resets all move selections
+                piece_selected = 0;
+                src_file = -1;
+                src_rank = -1;
+
+                seconds_left = 60;
+                timeoutcount = 0;
+            }
+            update_clock_outputs(); //update status of clock for new player
+        }
+        return;
+    }
 
     if (cause == 17) {
         *SW_EDGECAP = SW_BIT;
@@ -229,9 +341,6 @@ void handle_interrupt(unsigned cause) {
         }
     }
 
-    static int src_file = -1;
-    static int src_rank = -1;
-    static int piece_selected = 0;
     if (cause == 18) {
         int pending = *BTN_EDGECAP;
         *BTN_EDGECAP = pending;
@@ -279,6 +388,9 @@ void handle_interrupt(unsigned cause) {
                 perform_move(src_file, src_rank, dst_file, dst_rank);
                 piece_selected = 0;
                 white_to_move = !white_to_move;
+                seconds_left = 60;
+                timeoutcount = 0;
+                update_clock_outputs();
             } else {
                 piece_selected = 0;
             }
