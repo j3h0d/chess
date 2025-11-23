@@ -29,17 +29,78 @@ volatile unsigned int *TMR_PERIODL = (volatile unsigned int *)(TIMER_BASE + 0x08
 volatile unsigned int *TMR_PERIODH = (volatile unsigned int *)(TIMER_BASE + 0x0C);
 
 #define BTN_BIT (1u << 0)
-#define SW_BIT 0x3F
+#define SW_BIT  0x3F
 
-// enabling interupts
+// enabling interrupts
 extern void enable_interrupt();
-void update_clock_outputs();
+
+static int game_over = 0;
 
 // ===== VGA helpers =====
 static volatile uint8_t  *get_framebuffer() { return (volatile uint8_t *)VIDEO_FRAMEBUFFER_BASE; }
-static volatile int *get_vga_control() { return (volatile int *)VIDEO_DMA_BASE; }
+static volatile int *get_vga_control()      { return (volatile int *)VIDEO_DMA_BASE; }
 
-// draw the board istelf
+// ===== LED / display helpers =====
+static void set_leds(int led_mask) {
+    volatile int *LED = (volatile int*)0x04000000;
+    *LED = led_mask & 0x3FF; // lower 10 bits used
+}
+
+static void set_displays(int display_number, int value) {
+    int addr = 0x04000050 + (0x10 * display_number);
+    volatile int *GET_DISPLAY = (volatile int*)addr;
+
+    switch (value) {
+        case 0: *GET_DISPLAY = 0b11000000; break;
+        case 1: *GET_DISPLAY = 0b11111001; break;
+        case 2: *GET_DISPLAY = 0b10100100; break;
+        case 3: *GET_DISPLAY = 0b10110000; break;
+        case 4: *GET_DISPLAY = 0b10011001; break;
+        case 5: *GET_DISPLAY = 0b10010010; break;
+        case 6: *GET_DISPLAY = 0b10000010; break;
+        case 7: *GET_DISPLAY = 0b11111000; break;
+        case 8: *GET_DISPLAY = 0b10000000; break;
+        case 9: *GET_DISPLAY = 0b10010000; break;
+        default:*GET_DISPLAY = 0b00000000; break; // blank
+    }
+}
+
+// clock state
+static volatile int timeoutcount  = 0;  // timer ticks (10 per second)
+static volatile int seconds_left  = 60; // starts at 60 for current player
+
+void update_clock_outputs(void) {
+    int sec = seconds_left;
+    if (sec < 0)  sec = 0;
+    if (sec > 99) sec = 99;   // we only show 2 digits
+
+    int tens = sec / 10;
+    int ones = sec % 10;
+    static volatile int zeros = 0;
+
+    // Rightmost two digits show seconds_left
+    set_displays(0, ones);  // rightmost
+    set_displays(1, tens);  // next
+    // Blank the other four digits
+    set_displays(2, zeros);
+    set_displays(3, zeros);
+    set_displays(4, zeros);
+    set_displays(5, zeros);
+
+    // LED logic:
+    // >10 seconds -> all 10 leds on
+    // N in [0...10] -> N rightmost leds on
+    if (seconds_left > 10) {
+        set_leds(0x3FF); // 10 ones: 0b11_1111_1111
+    } else if (seconds_left >= 0) {
+        unsigned int mask = (seconds_left == 0) ? 0 : ((1u << seconds_left) - 1u);
+        set_leds(mask);
+    } else {
+        set_leds(0);
+    }
+}
+
+// draw the board itself
 static void draw_board_tiles() {
     volatile uint8_t *fb = get_framebuffer();
 
@@ -58,11 +119,13 @@ static void draw_board_tiles() {
 }
 
 static int is_white_piece(uint8_t piece) {
-    return piece == PIECE_W_PAWN || piece == PIECE_W_ROOK   || piece == PIECE_W_KNIGHT || piece == PIECE_W_BISHOP || piece == PIECE_W_QUEEN  || piece == PIECE_W_KING;
+    return piece == PIECE_W_PAWN || piece == PIECE_W_ROOK   || piece == PIECE_W_KNIGHT ||
+           piece == PIECE_W_BISHOP || piece == PIECE_W_QUEEN || piece == PIECE_W_KING;
 }
 
 static int is_black_piece(uint8_t piece) {
-    return piece == PIECE_B_PAWN || piece == PIECE_B_ROOK   || piece == PIECE_B_KNIGHT || piece == PIECE_B_BISHOP || piece == PIECE_B_QUEEN  || piece == PIECE_B_KING;
+    return piece == PIECE_B_PAWN || piece == PIECE_B_ROOK   || piece == PIECE_B_KNIGHT ||
+           piece == PIECE_B_BISHOP || piece == PIECE_B_QUEEN || piece == PIECE_B_KING;
 }
 
 // draw the pieces on the board
@@ -74,11 +137,9 @@ static void draw_piece_at(int file, int rank_board, uint8_t piece) {
     int tile_x0 = BOARD_X0 + file * TILE_SIZE;
     int tile_y0 = BOARD_Y0 + rank_board * TILE_SIZE;
 
-    //get chess piece pointer for this piece
     const uint8_t *sprite = get_piece_sprite(piece);
     if (!sprite) return;
 
-    //draw each shi in right place
     int px0 = tile_x0 + (TILE_SIZE - PIECE_SPRITE_W)  / 2;
     int py0 = tile_y0 + (TILE_SIZE - PIECE_SPRITE_H) / 2;
 
@@ -90,10 +151,8 @@ static void draw_piece_at(int file, int rank_board, uint8_t piece) {
             int px = px0 + sx;
             if ((unsigned)px >= VIDEO_WIDTH) continue;
 
-            // Row-major indexing into 1D array
             uint8_t color = sprite[sy * PIECE_SPRITE_W + sx];
 
-            // Skip transparent background pixels
             if (color == COLOR_TRANSPARENT_KEY) {
                 continue;
             }
@@ -111,7 +170,7 @@ static void init_start_position(void) {
         }
     }
 
-    // Svarta pjäser
+    // black pieces
     board[0][0] = PIECE_B_ROOK;
     board[0][1] = PIECE_B_KNIGHT;
     board[0][2] = PIECE_B_BISHOP;
@@ -125,7 +184,7 @@ static void init_start_position(void) {
         board[1][f] = PIECE_B_PAWN;
     }
 
-    // Vita pjäser
+    // white pieces
     for (int f = 0; f < BOARD_TILES; f++) {
         board[6][f] = PIECE_W_PAWN;
     }
@@ -140,7 +199,7 @@ static void init_start_position(void) {
     board[7][7] = PIECE_W_ROOK;
 }
 
-// Rita om bräde + pjäser
+// redraw board + pieces
 void redraw_board_and_pieces(void) {
     draw_board_tiles();
 
@@ -155,8 +214,6 @@ void redraw_board_and_pieces(void) {
 }
 
 // ===== Selector and switch decoding =====
-
-// draw red border around a board square (file, rank_board: 0=top,7=bottom)
 static void select_tile(int file, int rank_board) {
     volatile uint8_t *fb = get_framebuffer();
 
@@ -168,7 +225,7 @@ static void select_tile(int file, int rank_board) {
 
     if (x0 < 0 || y0 < 0 || x1 >= VIDEO_WIDTH || y1 >= VIDEO_HEIGHT) return;
 
-    for(int b = 0; b < border; b++){
+    for (int b = 0; b < border; b++) {
         for (int x = x0; x <= x1; x++) {
             fb[(y0 - b) * VIDEO_PITCH + x] = COLOR_RED;
             fb[(y1 - b) * VIDEO_PITCH + x] = COLOR_RED;
@@ -224,7 +281,13 @@ static int sel_file = -1;
 static int sel_rank = -1;
 static int btn_down = 0;
 static int white_to_move = 1;
-// ===== Interrupt init =====
+
+// moved from inside handle_interrupt to outside to be independent
+static int src_file = -1;
+static int src_rank = -1;
+static int piece_selected = 0;
+
+// ===== Interrupt handler =====
 void handle_interrupt(unsigned cause) {
 
     if (cause == 16) {
@@ -240,11 +303,10 @@ void handle_interrupt(unsigned cause) {
 
             if (seconds_left <= 0) {
                 seconds_left = 0;
-                update_clock_outputs(); //shows 0 and leds all off
+                update_clock_outputs();
 
                 white_to_move = !white_to_move;
 
-                // resets all move selections
                 piece_selected = 0;
                 src_file = -1;
                 src_rank = -1;
@@ -252,7 +314,7 @@ void handle_interrupt(unsigned cause) {
                 seconds_left = 60;
                 timeoutcount = 0;
             }
-            update_clock_outputs(); //update status of clock for new player
+            update_clock_outputs();
         }
         return;
     }
@@ -268,14 +330,13 @@ void handle_interrupt(unsigned cause) {
             if (f != sel_file || board_rank != sel_rank) {
                 redraw_board_and_pieces();
 
-                if(piece_selected){
+                if (piece_selected) {
                     select_tile(src_file, src_rank);
                 }
 
                 select_tile(f, board_rank);
                 sel_file = f;
                 sel_rank = board_rank;
-
             }
         }
     }
@@ -304,7 +365,7 @@ void handle_interrupt(unsigned cause) {
             return;
         }
 
-        if(!piece_selected){
+        if (!piece_selected) {
             uint8_t piece = board[sel_rank][sel_file];
             if (piece == PIECE_EMPTY) {
                 return;
