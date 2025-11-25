@@ -121,11 +121,31 @@ static int pawn_move(int src_file, int src_rank, int dst_file, int dst_rank, uin
 
     uint8_t dst_piece = board[dst_rank][dst_file];
 
-    // Movement for pawn
+    // Movement for pawn (one step)
     if (dst_x == 0 && dst_y == dir) {
         if (dst_piece == PIECE_EMPTY) return 1;
         return 0;
     }
+
+    // two steps movement for pawn only first move 
+    if (dst_x == 0 && dst_y == 2*dir) {
+        // white starts on rank 6 (row 7), black starts on rank 1 (row 2)
+        if (white_piece(piece)) {
+            if (src_rank == 6) {
+                if (board[src_rank + dir][src_file] == PIECE_EMPTY &&
+                    dst_piece == PIECE_EMPTY) //nothing infront
+                    return 1;
+            }
+        } else { //for bakak piece
+            if (src_rank == 1) {
+                if (board[src_rank + dir][src_file] == PIECE_EMPTY &&
+                    dst_piece == PIECE_EMPTY)
+                    return 1;
+            }
+        }
+        return 0;
+    }
+
 
     // Capture pieces diagonally
     if ((dst_x == 1 || dst_x == -1) && dst_y == dir) {
