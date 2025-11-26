@@ -4,40 +4,15 @@
 #include "piece_sprites.h"
 #include "jtag_uart.h"
 
-// ===== Global board state =====
+// Global board state
 uint8_t board[BOARD_TILES][BOARD_TILES];
-
-// Switch PIO base
-#define SW_BASE 0x04000010
-volatile unsigned int *SW_DATA    = (volatile unsigned int *)(SW_BASE + 0x00);
-volatile unsigned int *SW_MASK    = (volatile unsigned int *)(SW_BASE + 0x08);
-volatile unsigned int *SW_EDGECAP = (volatile unsigned int *)(SW_BASE + 0x0C);
-
-// Button PIO base
-#define BTN_BASE 0x040000D0
-volatile unsigned int *BTN_DATA    = (volatile unsigned int *)(BTN_BASE + 0x00);
-volatile unsigned int *BTN_MASK    = (volatile unsigned int *)(BTN_BASE + 0x08);
-volatile unsigned int *BTN_EDGECAP = (volatile unsigned int *)(BTN_BASE + 0x0C);
-
-// -timer hardware-
-#define TIMER_BASE  0x04000020
-volatile unsigned int *TMR_STATUS  = (volatile unsigned int *)(TIMER_BASE + 0x00);
-volatile unsigned int *TMR_CONTROL = (volatile unsigned int *)(TIMER_BASE + 0x04);
-volatile unsigned int *TMR_PERIODL = (volatile unsigned int *)(TIMER_BASE + 0x08);
-volatile unsigned int *TMR_PERIODH = (volatile unsigned int *)(TIMER_BASE + 0x0C);
-
-#define BTN_BIT (1u << 0)
-#define SW_BIT  0x3F
 
 // enabling interrupts
 extern void enable_interrupt();
 
 static int game_over = 0;
 
-//VGA helpers
-static volatile uint8_t  *get_framebuffer() { return (volatile uint8_t *)VIDEO_FRAMEBUFFER_BASE; }
-static volatile int *get_vga_control() { return (volatile int *)VIDEO_DMA_BASE; }
-
+//board display helper functions
 static void set_leds(int led_mask) {
     volatile int *LED = (volatile int*) 0x04000000;
     *LED = led_mask & 0x3FF; // -lower 10 bits used-
@@ -117,11 +92,11 @@ static void draw_board_tiles() {
 }
 
 static int is_white_piece(uint8_t piece) {
-    return piece == PIECE_W_PAWN || piece == PIECE_W_ROOK   || piece == PIECE_W_KNIGHT || piece == PIECE_W_BISHOP || piece == PIECE_W_QUEEN  || piece == PIECE_W_KING;
+    return piece == PIECE_W_PAWN || piece == PIECE_W_ROOK || piece == PIECE_W_KNIGHT || piece == PIECE_W_BISHOP || piece == PIECE_W_QUEEN  || piece == PIECE_W_KING;
 }
 
 static int is_black_piece(uint8_t piece) {
-    return piece == PIECE_B_PAWN || piece == PIECE_B_ROOK   || piece == PIECE_B_KNIGHT || piece == PIECE_B_BISHOP || piece == PIECE_B_QUEEN  || piece == PIECE_B_KING;
+    return piece == PIECE_B_PAWN || piece == PIECE_B_ROOK || piece == PIECE_B_KNIGHT || piece == PIECE_B_BISHOP || piece == PIECE_B_QUEEN  || piece == PIECE_B_KING;
 }
 
 // draw the pieces on the board
@@ -162,7 +137,7 @@ static void draw_piece_at(int file, int rank_board, uint8_t piece) {
     }
 }
 
-// ===== Board setup =====
+// Board setup
 static void init_start_position(void) {
     for (int r = 0; r < BOARD_TILES; r++) {
         for (int f = 0; f < BOARD_TILES; f++) {

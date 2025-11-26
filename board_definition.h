@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-// hardware mapping
+// board (hardware) mapping
 
 #define VIDEO_FRAMEBUFFER_BASE 0x08000000u
 #define VIDEO_DMA_BASE         0x04000100u
@@ -56,7 +56,32 @@ typedef enum {
 } Piece;
 
 // global board state
-
 extern uint8_t board[BOARD_TILES][BOARD_TILES];
+
+// switches
+extern volatile unsigned int *SW_DATA;
+extern volatile unsigned int *SW_MASK;
+extern volatile unsigned int *SW_EDGECAP;
+
+#define SW_BIT   0x3F      // switches 0..5
+#define BTN_BIT  (1u << 0) // button 0
+
+//buttons
+extern volatile unsigned int *BTN_DATA;
+extern volatile unsigned int *BTN_MASK;
+extern volatile unsigned int *BTN_EDGECAP;
+
+// Timer
+extern volatile unsigned int *TMR_STATUS;
+extern volatile unsigned int *TMR_CONTROL;
+extern volatile unsigned int *TMR_PERIODL;
+extern volatile unsigned int *TMR_PERIODH;
+
+// LEDs
+extern volatile int *LED;
+
+//vga helpers functions (implemented in .c)
+volatile uint8_t *get_framebuffer(void);
+volatile int *get_vga_control(void);
 
 #endif
