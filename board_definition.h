@@ -84,4 +84,15 @@ extern volatile int *LED;
 volatile uint8_t *get_framebuffer(void);
 volatile int *get_vga_control(void);
 
+//function prototyopes for .c file
+void redraw_board_and_pieces(void);
+
+void draw_board_tiles(void);
+
+void draw_piece_at(int file, int rank, uint8_t piece);
+
+void select_tile(int file, int rank);
+
+void read_switch_square(int *file, int *rank_sw);
+
 #endif
