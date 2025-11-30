@@ -350,9 +350,13 @@ int main() {
     vga_control[VIDEO_DMA_BACKBUFFER] = (int)framebuffer;
     vga_control[VIDEO_DMA_BUFFER]     = 0;
 
+    #ifdef PERF
+    benchmark_logic(); //test 1
+    benchmark_render(); //test 2
     while (1) {
         // all game interaction happens in handle_interrupt()
     }
+    #endif
 
     return 0;
 }
